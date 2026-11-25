@@ -16,7 +16,7 @@ import {
   chunkLeads,
   createCampaign,
 } from '@/services/Instantly';
-import { createTaskRun, fetchTaskRunResult } from '@/services/Parallel';
+import { createTaskRun, fetchTaskRunResult, ParallelCreditError } from '@/services/Parallel';
 import { checkWebsite } from '@/services/WebsiteCheck';
 import { readOwnWebsite } from '@/utils/Leads';
 import { EnrichmentContentValidation } from '@/validations/EnrichmentValidation';
@@ -55,6 +55,12 @@ import { markWriteBatchAbandoned, writeBatchJobHandlers } from './WriteBatchJobs
 
 /** How long Parallel may hold a poll open. Short, so the worker stays snappy. */
 const PARALLEL_POLL_TIMEOUT_SECONDS = 5;
+
+/**
+ * How long a job waits for Parallel credit to be topped up. The job keeps its attempts,
+ * so its lead stays pending and a search does not scrape more businesses to replace it.
+ */
+const PARALLEL_CREDIT_RETRY_SECONDS = 10 * 60;
 
 type Job = typeof jobSchema.$inferSelect;
 
@@ -445,6 +451,18 @@ export const processJobs = async (limit: number) => {
       await handlers[job.type](job);
     } catch (error) {
       failed += 1;
+
+      if (error instanceof ParallelCreditError) {
+        // oxlint-disable-next-line no-await-in-loop
+        await rescheduleJob({ jobId: job.id, delaySeconds: PARALLEL_CREDIT_RETRY_SECONDS });
+        logger.warn('Job {jobId} ({type}) waits for Parallel credit: {error}', {
+          jobId: job.id,
+          type: job.type,
+          error: error.message,
+        });
+
+        continue;
+      }
 
       const message = error instanceof Error ? error.message : String(error);
       // oxlint-disable-next-line no-await-in-loop

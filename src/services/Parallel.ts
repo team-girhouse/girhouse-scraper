@@ -9,6 +9,11 @@ const PARALLEL_API_URL = 'https://api.parallel.ai/v1';
 
 export type ParallelProcessor = (typeof parallelProcessorEnum.enumValues)[number];
 
+/** Parallel refused a run because the account is out of credit; a top-up fixes it. */
+export class ParallelCreditError extends Error {
+  override name = 'ParallelCreditError';
+}
+
 /**
  * List price of one completed task run, in millionths of a US dollar.
  * Parallel bills per run, not per token, and failed runs are free.
@@ -324,6 +329,10 @@ const startRun = async (options: {
       },
     }),
   });
+
+  if (response.status === 402) {
+    throw new ParallelCreditError(`Parallel is out of credit: ${await response.text()}`);
+  }
 
   if (!response.ok) {
     throw new Error(
