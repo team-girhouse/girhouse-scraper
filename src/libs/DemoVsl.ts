@@ -39,8 +39,11 @@ type Job = typeof jobSchema.$inferSelect;
 
 type Demo = typeof demoSchema.$inferSelect;
 
-/** Kie's Gemini voices (`google/gemini-3-8-flash-tts`) time out since 25/11. */
-const TTS_MODEL = 'elevenlabs/text-to-speech-multilingual-v2';
+/**
+ * Kie's Gemini voices (`google/gemini-3-8-flash-tts`) time out since 25/11. Turbo 2.5 costs half
+ * of multilingual v2 (6 credits a line instead of 12) for a slightly flatter delivery.
+ */
+const TTS_MODEL = 'elevenlabs/text-to-speech-turbo-2-5';
 
 const PHOTO_MODEL = 'nano-banana-2-1';
 
