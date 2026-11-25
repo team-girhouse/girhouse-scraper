@@ -6,6 +6,12 @@ export const GIGI_VOICE_NAME = 'Achird';
 export const GIGI_VOICE_STYLE =
   'Voce maschile calda e amichevole, italiano naturale, ritmo tranquillo e sorridente.';
 
+/**
+ * ElevenLabs "Liam" on Kie: a young, lively male voice, used for the demo videos since
+ * Kie's Gemini voices stopped working on 25/11 ("generate task timeout").
+ */
+export const GIGI_DEMO_VOICE_ID = 'TX3LPaxmHKxFdv7VOQHJ';
+
 /** Gemini has no speed setting: the videos speed the voice up with ffmpeg, the page plays it faster. */
 export const GIGI_VOICE_TEMPO = 1.15;
 

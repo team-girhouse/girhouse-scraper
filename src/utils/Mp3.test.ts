@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { trimSilence, wavToMp3 } from './Mp3';
+import { mp3Seconds, trimSilence, voiceToMp3, wavToMp3 } from './Mp3';
 
 /**
  * Builds a 16-bit PCM WAV of a tone.
@@ -60,6 +60,34 @@ describe('Mp3', () => {
 
   it('rejects a file that is not WAV', () => {
     expect(() => wavToMp3(Buffer.from('not a wav file at all, really'))).toThrow('Not a WAV');
+  });
+
+  describe('MP3 voices', () => {
+    const mp3 = wavToMp3(toneWav({ seconds: 2, sampleRate: 24_000, channels: 1 })).data;
+
+    it('measures an MP3 by its frames', () => {
+      // lame adds a few frames of padding around the samples
+      expect(mp3Seconds(mp3)).toBeGreaterThan(1.9);
+      expect(mp3Seconds(mp3)).toBeLessThan(2.2);
+    });
+
+    it('skips the ID3 tag before the frames', () => {
+      const tag = Buffer.from([0x49, 0x44, 0x33, 4, 0, 0, 0, 0, 0, 5, 1, 2, 3, 4, 5]);
+
+      expect(mp3Seconds(Buffer.concat([tag, mp3]))).toBe(mp3Seconds(mp3));
+    });
+
+    it('keeps an MP3 voice as it is', () => {
+      expect(voiceToMp3(mp3)).toStrictEqual({ data: mp3, seconds: mp3Seconds(mp3) });
+    });
+
+    it('encodes a WAV voice', () => {
+      expect(voiceToMp3(toneWav({ seconds: 1, sampleRate: 24_000, channels: 1 })).seconds).toBe(1);
+    });
+
+    it('rejects a file that is neither', () => {
+      expect(() => voiceToMp3(Buffer.from('not a voice at all, really'))).toThrow('Not an MP3');
+    });
   });
 
   describe('Silence', () => {
