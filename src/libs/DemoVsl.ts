@@ -23,10 +23,10 @@ import {
 import { toDemoVsl, writeDemoVsl } from '@/services/DemoVslWriter';
 import { speakAsHost } from '@/services/ElevenLabs';
 import { createKieTask, downloadFromKie, readKieTask } from '@/services/Kie';
-import { GIGI_VOICE_NAME, GIGI_VOICE_STYLE, toSpokenText } from '@/utils/GigiVoice';
+import { GIGI_DEMO_VOICE_ID, toSpokenText } from '@/utils/GigiVoice';
 import type { Narrator } from '@/utils/HostVoice';
 import { HOST_VOICE_SAMPLE_RATE } from '@/utils/HostVoice';
-import { pcmToMp3, wavToMp3 } from '@/utils/Mp3';
+import { pcmToMp3, voiceToMp3 } from '@/utils/Mp3';
 import { getAutomationSettings } from './AutomationSettings';
 import { db } from './DB';
 import { loadDemoReviews } from './DemoReviews';
@@ -39,7 +39,8 @@ type Job = typeof jobSchema.$inferSelect;
 
 type Demo = typeof demoSchema.$inferSelect;
 
-const TTS_MODEL = 'google/gemini-3-8-flash-tts';
+/** Kie's Gemini voices (`google/gemini-3-8-flash-tts`) time out since 25/11. */
+const TTS_MODEL = 'elevenlabs/text-to-speech-multilingual-v2';
 
 const PHOTO_MODEL = 'nano-banana-2-1';
 
@@ -202,10 +203,7 @@ const renderVoiceLines = async (demo: Demo, vsl: DemoVsl) => {
  * @returns The Kie task.
  */
 const startVoice = async (text: string) =>
-  await createKieTask(TTS_MODEL, {
-    speakers: [{ speaker_id: 'Speaker 1', voice_name: GIGI_VOICE_NAME }],
-    dialogue_turns: [{ speaker_id: 'Speaker 1', style: GIGI_VOICE_STYLE, text }],
-  });
+  await createKieTask(TTS_MODEL, { text, voice: GIGI_DEMO_VOICE_ID, language_code: 'it' });
 
 /**
  * Asks Kie for the photo behind one of Gigi's lines, wide or tall.
@@ -259,14 +257,14 @@ const pollTask = async (task: KieTask): Promise<KieTask> => {
 };
 
 /**
- * Downloads one voice Kie made, as MP3.
+ * Downloads one voice Kie made, as MP3: ElevenLabs gives MP3, Gemini gave WAV.
  * @param task The voice task, done.
  * @returns The line, what it says and the MP3.
  */
 const downloadVoice = async (task: KieTask & { url: string }) => ({
   line: task.line,
   text: task.text,
-  ...wavToMp3(await downloadFromKie(task.url)),
+  ...voiceToMp3(await downloadFromKie(task.url)),
 });
 
 /**

@@ -118,3 +118,122 @@ export const wavToMp3 = (wav: Buffer) => {
 
   return pcmToMp3(channel, sampleRate);
 };
+
+/** Kilobits a second of MPEG-1 and MPEG-2 Layer III, by the header's bitrate index. */
+const MPEG1_KBPS = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
+
+const MPEG2_KBPS = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
+
+/** Samples a second, by the header's version bits and then its rate index. */
+const SAMPLE_RATES: Record<number, number[]> = {
+  3: [44_100, 48_000, 32_000],
+  2: [22_050, 24_000, 16_000],
+  0: [11_025, 12_000, 8000],
+};
+
+/**
+ * Reads a run of bits from a byte.
+ * @param byte The byte.
+ * @param from The lowest bit, 0 being the rightmost.
+ * @param count How many bits.
+ * @returns Their value.
+ */
+const bitsOf = (byte: number, from: number, count: number) =>
+  Math.floor(byte / 2 ** from) % 2 ** count;
+
+/** The ID3 tag's header: "ID3", version, flags and the size of what follows. */
+const ID3_HEADER_BYTES = 10;
+
+/**
+ * Skips the ID3 tag an MP3 file may start with.
+ * @param mp3 The file.
+ * @returns Where the first frame starts.
+ */
+const skipId3 = (mp3: Buffer) => {
+  if (mp3.length < ID3_HEADER_BYTES || mp3.toString('ascii', 0, 3) !== 'ID3') {
+    return 0;
+  }
+
+  // Seven bits a byte, so the size never looks like a frame start
+  const size = [6, 7, 8, 9].reduce((sum, index) => sum * 128 + mp3.readUInt8(index), 0);
+  const hasFooter = bitsOf(mp3.readUInt8(5), 4, 1) === 1;
+
+  return ID3_HEADER_BYTES + size + (hasFooter ? ID3_HEADER_BYTES : 0);
+};
+
+/**
+ * Reads one Layer III frame header.
+ * @param mp3 The file.
+ * @param offset Where the frame starts.
+ * @returns The frame's size in bytes and length in seconds, or null when no frame starts there.
+ */
+const readFrame = (mp3: Buffer, offset: number) => {
+  const flags = mp3.readUInt8(offset + 1);
+  const rates = mp3.readUInt8(offset + 2);
+  // Eleven set bits start a frame, and Layer III is 01 in bits 1-2
+  const isFrame =
+    mp3.readUInt8(offset) === 0xff && bitsOf(flags, 5, 3) === 7 && bitsOf(flags, 1, 2) === 1;
+
+  if (!isFrame) {
+    return null;
+  }
+
+  const version = bitsOf(flags, 3, 2);
+  const isMpeg1 = version === 3;
+  const kbps = (isMpeg1 ? MPEG1_KBPS : MPEG2_KBPS)[bitsOf(rates, 4, 4)];
+  const sampleRate = SAMPLE_RATES[version]?.[bitsOf(rates, 2, 2)];
+
+  if (!kbps || !sampleRate) {
+    return null;
+  }
+
+  const samples = isMpeg1 ? 1152 : 576;
+  const padding = bitsOf(rates, 1, 1);
+
+  return {
+    bytes: Math.floor((samples / 8) * ((kbps * 1000) / sampleRate)) + padding,
+    seconds: samples / sampleRate,
+  };
+};
+
+/**
+ * Measures an MP3 voice by walking its frames, so it works whatever the bitrate.
+ * @param mp3 The file.
+ * @returns Its length in seconds.
+ * @throws {Error} When the file holds no MP3 frames.
+ */
+export const mp3Seconds = (mp3: Buffer) => {
+  let offset = skipId3(mp3);
+  let seconds = 0;
+  let frames = 0;
+
+  while (offset + 4 <= mp3.length) {
+    const frame = readFrame(mp3, offset);
+
+    if (frame) {
+      seconds += frame.seconds;
+      frames += 1;
+      offset += frame.bytes;
+    } else {
+      // Junk between frames: look for the next one
+      offset += 1;
+    }
+  }
+
+  if (frames === 0) {
+    throw new Error('Not an MP3 file');
+  }
+
+  return seconds;
+};
+
+/**
+ * Readies a voice the generator made: a WAV is encoded as MP3, an MP3 is kept as it is.
+ * @param file The WAV or MP3 file.
+ * @returns The MP3 and its length in seconds.
+ * @throws {Error} When the file is neither.
+ */
+export const voiceToMp3 = (file: Buffer) =>
+  file.toString('ascii', 0, 4) === 'RIFF'
+    ? wavToMp3(file)
+    : { data: file, seconds: mp3Seconds(file) };
