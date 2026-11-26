@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { NextIntlClientProvider } from 'next-intl';
 import { getFormatter, getTranslations, setRequestLocale } from 'next-intl/server';
 import { cookies } from 'next/headers';
 import { notFound } from 'next/navigation';
@@ -11,8 +12,10 @@ import { VideoPending } from '@/components/demo/vsl/VideoPending';
 import { loadDemoReviews } from '@/libs/DemoReviews';
 import { getDemoPage } from '@/libs/Demos';
 import { getDemoPhotos, getDemoVoices } from '@/libs/DemoVsl';
+import enMessages from '@/locales/en.json';
 import { AppConfig } from '@/utils/AppConfig';
 import { readableTextColor } from '@/utils/Colors';
+import { demoLanguageOf } from '@/utils/DemoLanguage';
 import { DEMO_STEPS } from '@/utils/DemoStats';
 import { DemoSlugValidation } from '@/validations/DemoValidation';
 
@@ -50,10 +53,45 @@ const readSavedProgress = async (slug: string) => {
   return cookieStore.get(demoProgressCookie(slug))?.value ?? null;
 };
 
+/**
+ * Picks the locale a demo shows in: the route's, unless the team asked for English.
+ * @param locale The route locale.
+ * @param guidance What the team wrote for the demo.
+ * @returns The locale of its texts.
+ */
+const demoLocaleOf = (locale: string, guidance: string | null) =>
+  demoLanguageOf(guidance) === 'en' ? 'en' : locale;
+
+/**
+ * Gives an English demo its own texts: the demo host always serves the Italian route.
+ * @param props Component props.
+ * @param props.locale The locale of the demo's texts.
+ * @param props.children The page.
+ * @returns The page, with the English texts when it needs them.
+ */
+const DemoLanguageScope = (props: {
+  locale: string;
+  children: React.ReactNode;
+}): React.ReactNode =>
+  props.locale === 'en' ? (
+    <NextIntlClientProvider
+      locale="en"
+      timeZone={AppConfig.timeZone}
+      messages={{ DemoPage: enMessages.DemoPage }}
+    >
+      {props.children}
+    </NextIntlClientProvider>
+  ) : (
+    props.children
+  );
+
 export async function generateMetadata(props: DemoPageProps): Promise<Metadata> {
   const { locale, slug } = await props.params;
-  const t = await getTranslations({ locale, namespace: 'DemoPage' });
   const page = await requireDemo(slug);
+  const t = await getTranslations({
+    locale: demoLocaleOf(locale, page.demo.guidance),
+    namespace: 'DemoPage',
+  });
 
   return {
     // Absolute, so the lead sees the brand rather than the dashboard's name
@@ -68,8 +106,10 @@ export default async function DemoPage(props: DemoPageProps) {
   const { locale, slug } = await props.params;
   setRequestLocale(locale);
 
-  const format = await getFormatter({ locale });
   const { demo, settings } = await requireDemo(slug);
+  // "lingua: inglese" in the team's guidance shows this one demo in English
+  const demoLocale = demoLocaleOf(locale, demo.guidance);
+  const format = await getFormatter({ locale: demoLocale });
   const { data } = demo;
   const searchParams = await props.searchParams;
   // Opened from the dashboard: nothing is tracked
@@ -133,20 +173,22 @@ export default async function DemoPage(props: DemoPageProps) {
   };
 
   return (
-    <div
-      style={brandStyle}
-      className="min-h-svh bg-gradient-to-b from-amber-50/70 via-white to-white"
-    >
-      {isPending && <VideoPending company={data.company} />}
-      {!isPending && vsl && (
-        <DemoVsl
-          {...tourProps}
-          vsl={vsl}
-          voices={await getDemoVoices(demo.id)}
-          vslPhotos={await getDemoPhotos(demo.id)}
-        />
-      )}
-      {!isPending && !vsl && <DemoTour {...tourProps} />}
-    </div>
+    <DemoLanguageScope locale={demoLocale}>
+      <div
+        style={brandStyle}
+        className="min-h-svh bg-gradient-to-b from-amber-50/70 via-white to-white"
+      >
+        {isPending && <VideoPending company={data.company} />}
+        {!isPending && vsl && (
+          <DemoVsl
+            {...tourProps}
+            vsl={vsl}
+            voices={await getDemoVoices(demo.id)}
+            vslPhotos={await getDemoPhotos(demo.id)}
+          />
+        )}
+        {!isPending && !vsl && <DemoTour {...tourProps} />}
+      </div>
+    </DemoLanguageScope>
   );
 }

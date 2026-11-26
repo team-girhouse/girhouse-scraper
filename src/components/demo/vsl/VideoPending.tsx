@@ -1,8 +1,11 @@
+'use client';
+
 import { useTranslations } from 'next-intl';
 import { GirhouseLogo } from '../GirhouseLogo';
 
 /**
- * What the link shows while the video is still being made.
+ * What the link shows while the video is still being made. A client component, so an
+ * English demo's own texts reach it.
  * @param props Component props.
  * @param props.company The business name.
  * @returns The waiting screen.
