@@ -1,5 +1,6 @@
 import { ExternalLink } from 'lucide-react';
 import { useFormatter, useTranslations } from 'next-intl';
+import { CopyRestartLinkButton } from '@/components/CopyRestartLinkButton';
 import { DemoVersionPanel } from '@/components/DemoVersionPanel';
 import { GenerateDemoButton } from '@/components/GenerateDemoButton';
 import { RebuildDemoForm } from '@/components/RebuildDemoForm';
@@ -92,6 +93,7 @@ export const ConversationDemoCard = (props: {
           <ExternalLink className="size-3.5" />
         </a>
         <p className="text-xs break-all text-muted-foreground">{url}</p>
+        <CopyRestartLinkButton url={`${url}?ricomincia=1`} />
         <dl className="grid gap-3 sm:grid-cols-2">
           {facts.map(([label, value]) => (
             <div key={label} className="space-y-0.5">

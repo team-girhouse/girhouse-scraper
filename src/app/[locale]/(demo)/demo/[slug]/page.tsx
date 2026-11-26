@@ -75,6 +75,8 @@ export default async function DemoPage(props: DemoPageProps) {
   // Opened from the dashboard: nothing is tracked
   const isPreview = searchParams.anteprima === '1';
   const step = z.coerce.number().int().min(1).max(DEMO_STEPS).safeParse(searchParams.passo);
+  // The "from the start" link copied from the dashboard: the scene this browser saved is ignored
+  const isRestart = searchParams.ricomincia === '1';
 
   const { reviews, details } = await loadDemoReviews({
     data,
@@ -105,7 +107,7 @@ export default async function DemoPage(props: DemoPageProps) {
     slug,
     track: !isPreview,
     initialStep: step.success ? step.data : null,
-    savedProgress: await readSavedProgress(slug),
+    savedProgress: isRestart ? null : await readSavedProgress(slug),
     data,
     reviews,
     photos: [

@@ -43,7 +43,7 @@ export default async function proxy(request: NextRequest) {
   if (DEMO_HOST && request.nextUrl.host === DEMO_HOST) {
     const slug = request.nextUrl.pathname.match(DEMO_PATH)?.at(1);
 
-    // The query carries `passo` and `anteprima`, which the page reads
+    // The query carries `passo`, `anteprima` and `ricomincia`, which the page reads
     return slug
       ? NextResponse.rewrite(new URL(`/it/demo/${slug}${request.nextUrl.search}`, request.url))
       : new NextResponse(null, { status: 404 });
