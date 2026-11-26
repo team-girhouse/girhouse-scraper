@@ -13,6 +13,7 @@ import {
   DEMO_SURFACES,
   LANDING_BODY_SECTIONS,
 } from '@/utils/DemoDesign';
+import { demoLanguageOf, ENGLISH_DEMO_INSTRUCTIONS } from '@/utils/DemoLanguage';
 import { cleanReply } from '@/utils/ReplyGuard';
 import { getClient, reasoningFor } from './Claude';
 import { toBilledCall } from './ReplyPrompt';
@@ -199,7 +200,11 @@ export const writeDemoTexts = async (options: { model: string; sources: DemoSour
     max_tokens: MAX_TOKENS,
     thinking: reasoning.thinking,
     output_config: { effort: reasoning.effort, format: zodOutputFormat(demoTextsSchema) },
-    system: INSTRUCTIONS,
+    // "lingua: inglese" in the team's notes writes this one demo in English
+    system:
+      demoLanguageOf(options.sources.teamNotes) === 'en'
+        ? `${INSTRUCTIONS}\n${ENGLISH_DEMO_INSTRUCTIONS}`
+        : INSTRUCTIONS,
     messages: [{ role: 'user', content: renderDemoSources(options.sources) }],
   });
 

@@ -11,7 +11,8 @@ import {
   videoLinesToVoice,
 } from '@/components/demo/vsl/VideoScript';
 import { vslLineValues, withVslChat } from '@/components/demo/vsl/VslScript';
-import messages from '@/locales/it.json';
+import enMessages from '@/locales/en.json';
+import itMessages from '@/locales/it.json';
 import type { DemoVsl } from '@/models/Schema';
 import {
   conversationSchema,
@@ -23,6 +24,8 @@ import {
 import { toDemoVsl, writeDemoVsl } from '@/services/DemoVslWriter';
 import { speakAsHost } from '@/services/ElevenLabs';
 import { createKieTask, downloadFromKie, readKieTask } from '@/services/Kie';
+import type { DemoLanguage } from '@/utils/DemoLanguage';
+import { demoLanguageOf } from '@/utils/DemoLanguage';
 import { GIGI_DEMO_VOICE_ID, toSpokenText } from '@/utils/GigiVoice';
 import type { Narrator } from '@/utils/HostVoice';
 import { HOST_VOICE_SAMPLE_RATE } from '@/utils/HostVoice';
@@ -78,6 +81,8 @@ const taskSchema = z.object({
   credits: z.number().default(0),
   // Kie gave up on it for good
   isFailed: z.boolean(),
+  // The language the voice speaks; jobs from before English demos are Italian
+  language: z.enum(['it', 'en']).default('it'),
 });
 
 const payloadSchema = z.object({
@@ -181,7 +186,12 @@ const writeScript = async (demo: Demo, generatedAt: string, narrator: Narrator) 
  */
 const renderVoiceLines = async (demo: Demo, vsl: DemoVsl) => {
   const context = await loadLineContext(demo, vsl);
-  const t = createTranslator({ locale: 'it', messages, namespace: 'DemoPage' });
+  const locale = demoLanguageOf(demo.guidance);
+  const t = createTranslator({
+    locale,
+    messages: locale === 'en' ? enMessages : itMessages,
+    namespace: 'DemoPage',
+  });
   const closing = VIDEO_CLOSING;
   const scenes = buildVideoScenes({ data: context.data, closing });
 
@@ -203,10 +213,16 @@ const renderVoiceLines = async (demo: Demo, vsl: DemoVsl) => {
  * Asks Kie to voice one of Gigi's lines. Gianmarco's own cloned voice, from the recordings
  * in `host_voice`, was used on 29/10 and set aside when Gigi came back (see commit 3204160).
  * @param text What he says.
+ * @param language The language he says it in.
  * @returns The Kie task.
  */
-const startVoice = async (text: string) =>
-  await createKieTask(TTS_MODEL, { text, voice: GIGI_DEMO_VOICE_ID, language_code: 'it' });
+const startVoice = async (text: string, language: DemoLanguage) =>
+  await createKieTask(TTS_MODEL, {
+    // The brand is spelled "Giraus" so an Italian voice says it right; an English one reads it as written
+    text: language === 'en' ? text.replaceAll('Giraus', 'Girhouse') : text,
+    voice: GIGI_DEMO_VOICE_ID,
+    language_code: language,
+  });
 
 /**
  * Asks Kie for the photo behind one of Gigi's lines, wide or tall.
@@ -227,10 +243,10 @@ const startPhoto = async (prompt: string, isPortrait: boolean) =>
  * @param task What to make.
  * @returns The Kie task.
  */
-const startTask = async (task: Pick<KieTask, 'kind' | 'line' | 'text'>) =>
+const startTask = async (task: Pick<KieTask, 'kind' | 'line' | 'text' | 'language'>) =>
   await (task.kind === 'photo'
     ? startPhoto(task.text, isPortraitLine(task.line))
-    : startVoice(task.text));
+    : startVoice(task.text, task.language));
 
 /**
  * Reads where one voice or photo stands, asking again once when Kie failed it.
@@ -400,10 +416,12 @@ export const advanceDemoVsl = async (
     const tasks: KieTask[] = [];
     // Gianmarco's voice comes from ElevenLabs at the end, not from Kie
     const lines = demo.vsl.narrator === 'gianmarco' ? [] : await renderVoiceLines(demo, demo.vsl);
+    const language = demoLanguageOf(demo.guidance);
     const entries = [
       ...lines.map((entry) => ({
         ...entry,
         kind: 'voice' as const,
+        language,
       })),
       // Version C has a tall photo for phones next to each wide one
       ...Object.entries(demo.vsl.images ?? {}).flatMap(([line, text]) =>
@@ -411,6 +429,7 @@ export const advanceDemoVsl = async (
           line: key,
           text,
           kind: 'photo' as const,
+          language,
         })),
       ),
     ];

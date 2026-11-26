@@ -5,6 +5,7 @@ import { VIDEO_PHOTO_LINES, VIDEO_WRITTEN_LINES } from '@/components/demo/vsl/Vi
 import { logger } from '@/libs/Logger';
 import type { DemoSnapshot, DemoVsl } from '@/models/Schema';
 import { requireCopywritingModel } from '@/utils/CopywritingModels';
+import { demoLanguageOf, ENGLISH_DEMO_INSTRUCTIONS } from '@/utils/DemoLanguage';
 import { findSectorPainPoints, renderPainPlaybook } from '@/utils/DemoPainPoints';
 import type { Narrator } from '@/utils/HostVoice';
 import { cleanReply } from '@/utils/ReplyGuard';
@@ -267,6 +268,8 @@ export const writeDemoVsl = async (options: {
       '',
       '# Pain points from the sales calls',
       renderPainPlaybook(sector),
+      // "lingua: inglese" in the team's notes writes this one video in English
+      demoLanguageOf(options.notes) === 'en' ? ENGLISH_DEMO_INSTRUCTIONS : '',
     ].join('\n'),
     messages: [{ role: 'user', content: renderBusiness(options) }],
   });
