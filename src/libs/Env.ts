@@ -38,8 +38,10 @@ export const Env = createEnv({
     FUNNEL_SECRET: z.string().min(16).optional(),
     // The organization funnel demos belong to; unset, the one that made the latest demo
     FUNNEL_ORGANIZATION_ID: z.string().min(1).optional(),
-    // Kie AI: makes Gigi's videos (`scripts/generate-gigi-video.ts`) and voices version B demos
+    // Kie AI: makes Gigi's videos (`scripts/generate-gigi-video.ts`) and the photos of version B demos
     KIE_API_KEY: z.string().min(1).optional(),
+    // Gemini API: Gigi's voice in version B demos
+    GEMINI_API_KEY: z.string().min(1).optional(),
     // ElevenLabs: Gianmarco's cloned voice, for the demos he narrates
     ELEVENLABS_API_KEY: z.string().min(1).optional(),
     ELEVENLABS_VOICE_ID: z.string().min(1).optional(),
@@ -96,6 +98,7 @@ export const Env = createEnv({
     FUNNEL_SECRET: process.env.FUNNEL_SECRET,
     FUNNEL_ORGANIZATION_ID: process.env.FUNNEL_ORGANIZATION_ID,
     KIE_API_KEY: process.env.KIE_API_KEY,
+    GEMINI_API_KEY: process.env.GEMINI_API_KEY,
     ELEVENLABS_API_KEY: process.env.ELEVENLABS_API_KEY,
     ELEVENLABS_VOICE_ID: process.env.ELEVENLABS_VOICE_ID,
     APIFY_API_TOKEN: process.env.APIFY_API_TOKEN,

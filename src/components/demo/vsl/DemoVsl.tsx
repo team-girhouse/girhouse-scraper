@@ -922,11 +922,12 @@ export const DemoVsl = (
             tour: (key) => t.markup(`line_${key}`, values),
           },
         });
-  // A voice says its line only while the page still writes it the same way
+  // A voice says its line only while the page still writes it the same way; while a new
+  // version is voiced, the old voice of a line sits next to the new one
   const voiceOf = (line: VslLine | VideoLine) => {
-    const voice = props.voices.find((entry) => entry.line === line);
+    const spoken = toSpokenText(markupOf(line));
 
-    return voice && voice.text === toSpokenText(markupOf(line)) ? voice : null;
+    return props.voices.find((entry) => entry.line === line && entry.text === spoken) ?? null;
   };
   // A photo goes behind its line only while the script still asks for it
   const photos = new Map(

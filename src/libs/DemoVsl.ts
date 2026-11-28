@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, notInArray, sql } from 'drizzle-orm';
 import { createTranslator } from 'next-intl';
 import sharp from 'sharp';
 import * as z from 'zod';
@@ -23,10 +23,16 @@ import {
 } from '@/models/Schema';
 import { toDemoVsl, writeDemoVsl } from '@/services/DemoVslWriter';
 import { speakAsHost } from '@/services/ElevenLabs';
+import { speakWithGemini } from '@/services/Gemini';
 import { createKieTask, downloadFromKie, readKieTask } from '@/services/Kie';
 import type { DemoLanguage } from '@/utils/DemoLanguage';
 import { demoLanguageOf } from '@/utils/DemoLanguage';
-import { GIGI_DEMO_VOICE_ID, toSpokenText } from '@/utils/GigiVoice';
+import {
+  GIGI_VOICE_NAME,
+  GIGI_VOICE_STYLE,
+  GIGI_VOICE_STYLE_EN,
+  toSpokenText,
+} from '@/utils/GigiVoice';
 import type { Narrator } from '@/utils/HostVoice';
 import { HOST_VOICE_SAMPLE_RATE } from '@/utils/HostVoice';
 import { pcmToMp3, voiceToMp3 } from '@/utils/Mp3';
@@ -42,12 +48,6 @@ type Job = typeof jobSchema.$inferSelect;
 
 type Demo = typeof demoSchema.$inferSelect;
 
-/**
- * Kie's Gemini voices (`google/gemini-3-8-flash-tts`) time out since 25/11. Turbo 2.5 costs half
- * of multilingual v2 (6 credits a line instead of 12) for a slightly flatter delivery.
- */
-const TTS_MODEL = 'elevenlabs/text-to-speech-turbo-2-5';
-
 const PHOTO_MODEL = 'nano-banana-2-1';
 
 /** Added to every prompt the AI writes, so the photos look alike. */
@@ -62,11 +62,20 @@ const PORTRAIT_WIDTH = 1080;
 
 const PHOTO_QUALITY = 86;
 
-/** Past this, the lines Kie has voiced are kept and the others are only typed, without a photo. */
+/** Past this, the lines voiced so far are kept and the others are only typed, without a photo. */
 const VOICE_TIMEOUT_MS = 15 * 60 * 1000;
 
-/** A voice or a photo Kie fails is asked again this many times. */
+/** A photo Kie fails is asked again this many times. */
 const VOICE_RETRIES = 1;
+
+/** Gemini is asked for a line this many times before the line is only typed. */
+const GEMINI_VOICE_ATTEMPTS = 3;
+
+/** Lines Gemini voices at once. */
+const GEMINI_VOICE_BATCH = 3;
+
+/** Each run voices lines for this long, then leaves the rest to the next run within the cron's limit. */
+const GEMINI_VOICE_BUDGET_MS = 40_000;
 
 const taskSchema = z.object({
   // Jobs from before the photos only voiced
@@ -79,8 +88,10 @@ const taskSchema = z.object({
   url: z.string().nullable(),
   // What Kie charged once it is made
   credits: z.number().default(0),
-  // Kie gave up on it for good
+  // Kie or Gemini gave up on it for good
   isFailed: z.boolean(),
+  // The `demo_voice` row Gemini's voice was stored in as soon as it was made
+  voiceId: z.uuid().nullable().default(null),
   // The language the voice speaks; jobs from before English demos are Italian
   language: z.enum(['it', 'en']).default('it'),
 });
@@ -210,19 +221,22 @@ const renderVoiceLines = async (demo: Demo, vsl: DemoVsl) => {
 };
 
 /**
- * Asks Kie to voice one of Gigi's lines. Gianmarco's own cloned voice, from the recordings
- * in `host_voice`, was used on 29/10 and set aside when Gigi came back (see commit 3204160).
+ * Says one of Gigi's lines with Gemini's own API: Kie's Gemini voices time out since 25/11 and
+ * its ElevenLabs ones failed for hours on 28/11. Gianmarco's own cloned voice, from the
+ * recordings in `host_voice`, was used on 29/10 and set aside when Gigi came back (see commit 3204160).
  * @param text What he says.
  * @param language The language he says it in.
- * @returns The Kie task.
+ * @returns The MP3 and its length in seconds.
  */
-const startVoice = async (text: string, language: DemoLanguage) =>
-  await createKieTask(TTS_MODEL, {
-    // The brand is spelled "Giraus" so an Italian voice says it right; an English one reads it as written
-    text: language === 'en' ? text.replaceAll('Giraus', 'Girhouse') : text,
-    voice: GIGI_DEMO_VOICE_ID,
-    language_code: language,
-  });
+const speakAsGigi = async (text: string, language: DemoLanguage) =>
+  voiceToMp3(
+    await speakWithGemini({
+      // The brand is spelled "Giraus" so an Italian voice says it right; an English one reads it as written
+      text: language === 'en' ? text.replaceAll('Giraus', 'Girhouse') : text,
+      voice: GIGI_VOICE_NAME,
+      style: language === 'en' ? GIGI_VOICE_STYLE_EN : GIGI_VOICE_STYLE,
+    }),
+  );
 
 /**
  * Asks Kie for the photo behind one of Gigi's lines, wide or tall.
@@ -239,22 +253,20 @@ const startPhoto = async (prompt: string, isPortrait: boolean) =>
   });
 
 /**
- * Asks Kie for a voice or a photo.
- * @param task What to make.
+ * Asks Kie for a photo.
+ * @param task The photo to make.
  * @returns The Kie task.
  */
-const startTask = async (task: Pick<KieTask, 'kind' | 'line' | 'text' | 'language'>) =>
-  await (task.kind === 'photo'
-    ? startPhoto(task.text, isPortraitLine(task.line))
-    : startVoice(task.text, task.language));
+const startTask = async (task: Pick<KieTask, 'line' | 'text'>) =>
+  await startPhoto(task.text, isPortraitLine(task.line));
 
 /**
- * Reads where one voice or photo stands, asking again once when Kie failed it.
+ * Reads where one photo stands, asking again once when Kie failed it. Voices come from Gemini.
  * @param task The task.
  * @returns The task, updated.
  */
 const pollTask = async (task: KieTask): Promise<KieTask> => {
-  if (task.url || task.isFailed) {
+  if (task.kind === 'voice' || task.url || task.isFailed) {
     return task;
   }
 
@@ -276,15 +288,76 @@ const pollTask = async (task: KieTask): Promise<KieTask> => {
 };
 
 /**
- * Downloads one voice Kie made, as MP3: ElevenLabs gives MP3, Gemini gave WAV.
- * @param task The voice task, done.
- * @returns The line, what it says and the MP3.
+ * Voices one line with Gemini and stores it right away, so a long script spreads over runs.
+ * @param demoId The demo.
+ * @param task The voice task.
+ * @returns The task, with the stored voice, one more attempt, or given up on.
  */
-const downloadVoice = async (task: KieTask & { url: string }) => ({
-  line: task.line,
-  text: task.text,
-  ...voiceToMp3(await downloadFromKie(task.url)),
-});
+const voiceLine = async (demoId: string, task: KieTask): Promise<KieTask> => {
+  try {
+    const voice = await speakAsGigi(task.text, task.language);
+    const [row] = await db
+      .insert(demoVoiceSchema)
+      .values({
+        demoId,
+        line: task.line,
+        text: task.text,
+        contentType: 'audio/mpeg',
+        data: voice.data.toString('base64'),
+        seconds: voice.seconds,
+      })
+      .returning({ id: demoVoiceSchema.id });
+
+    return { ...task, voiceId: row?.id ?? null };
+  } catch (error) {
+    const retries = task.retries + 1;
+    const isFailed = retries >= GEMINI_VOICE_ATTEMPTS;
+
+    if (isFailed) {
+      logger.warn('Gemini could not voice {line}: {error}', {
+        line: task.line,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    return { ...task, retries, isFailed };
+  }
+};
+
+/**
+ * Tells whether a voice is still to be made.
+ * @param task The task.
+ * @returns Whether it is a voice not yet stored nor given up on.
+ */
+const isPendingVoice = (task: KieTask) => task.kind === 'voice' && !task.voiceId && !task.isFailed;
+
+/**
+ * Voices the lines still waiting, a few at a time, for as long as one run allows.
+ * @param demoId The demo.
+ * @param tasks The voice and photo tasks.
+ * @returns The tasks, updated.
+ */
+const voicePendingLines = async (demoId: string, tasks: KieTask[]) => {
+  const startedAt = Date.now();
+  const pending = tasks.filter(isPendingVoice);
+  const updated = new Map<KieTask, KieTask>();
+
+  for (
+    let index = 0;
+    index < pending.length && Date.now() - startedAt < GEMINI_VOICE_BUDGET_MS;
+    index += GEMINI_VOICE_BATCH
+  ) {
+    const batch = pending.slice(index, index + GEMINI_VOICE_BATCH);
+    // oxlint-disable-next-line no-await-in-loop
+    const voiced = await Promise.all(batch.map(async (task) => await voiceLine(demoId, task)));
+
+    for (const [position, task] of batch.entries()) {
+      updated.set(task, voiced[position] ?? task);
+    }
+  }
+
+  return tasks.map((task) => updated.get(task) ?? task);
+};
 
 /**
  * Says every line in Gianmarco's cloned voice. ElevenLabs answers at once, so this runs
@@ -294,7 +367,7 @@ const downloadVoice = async (task: KieTask & { url: string }) => ({
  * @returns Each line, what it says and the MP3; lines ElevenLabs refused are left out.
  */
 const voiceAsHost = async (demo: Demo, vsl: DemoVsl) => {
-  const voiced: Awaited<ReturnType<typeof downloadVoice>>[] = [];
+  const voiced: (ReturnType<typeof pcmToMp3> & { line: string; text: string })[] = [];
 
   for (const entry of await renderVoiceLines(demo, vsl)) {
     try {
@@ -333,28 +406,34 @@ const downloadPhoto = async (task: KieTask & { url: string }) => ({
 });
 
 /**
- * Downloads the voices and photos Kie made, stores them in place of the demo's old ones
- * and marks version B as voiced.
+ * Downloads the photos Kie made, stores them in place of the demo's old ones, keeps only the
+ * voices this version made and marks version B as voiced.
  * @param demo The demo.
  * @param tasks The voice and photo tasks.
  */
 const storeResults = async (demo: Demo, tasks: KieTask[]) => {
   const voiced = demo.vsl?.narrator === 'gianmarco' ? await voiceAsHost(demo, demo.vsl) : [];
   const photos: Awaited<ReturnType<typeof downloadPhoto>>[] = [];
+  // Gemini's voices are stored as they are made: the older ones go
+  const keptVoiceIds = tasks.flatMap((task) => (task.voiceId ? [task.voiceId] : []));
 
   // One at a time: Kie's file host drops connections when many come at once
   for (const task of tasks) {
     if (task.url && task.kind === 'photo') {
       // oxlint-disable-next-line no-await-in-loop
       photos.push(await downloadPhoto({ ...task, url: task.url }));
-    } else if (task.url) {
-      // oxlint-disable-next-line no-await-in-loop
-      voiced.push(await downloadVoice({ ...task, url: task.url }));
     }
   }
 
   await db.transaction(async (tx) => {
-    await tx.delete(demoVoiceSchema).where(eq(demoVoiceSchema.demoId, demo.id));
+    await tx
+      .delete(demoVoiceSchema)
+      .where(
+        and(
+          eq(demoVoiceSchema.demoId, demo.id),
+          keptVoiceIds.length > 0 ? notInArray(demoVoiceSchema.id, keptVoiceIds) : undefined,
+        ),
+      );
     await tx.delete(demoPhotoSchema).where(eq(demoPhotoSchema.demoId, demo.id));
 
     if (voiced.length > 0) {
@@ -385,10 +464,43 @@ const storeResults = async (demo: Demo, tasks: KieTask[]) => {
     await tx
       .update(demoSchema)
       .set({
-        vsl: sql`jsonb_set(${demoSchema.vsl}, '{voice}', ${JSON.stringify(voiced.length > 0 ? 'ready' : 'failed')}::jsonb)`,
+        vsl: sql`jsonb_set(${demoSchema.vsl}, '{voice}', ${JSON.stringify(voiced.length + keptVoiceIds.length > 0 ? 'ready' : 'failed')}::jsonb)`,
       })
       .where(eq(demoSchema.id, demo.id));
   });
+};
+
+/**
+ * Reads where Kie's photos stand, recording what each one cost as soon as it is made.
+ * @param demo The demo.
+ * @param tasks The voice and photo tasks.
+ * @returns The tasks, updated.
+ */
+const pollPhotos = async (demo: Demo, tasks: KieTask[]) => {
+  const polledTasks: KieTask[] = [];
+  const owner = await findDemoOwner(demo);
+
+  for (const task of tasks) {
+    // oxlint-disable-next-line no-await-in-loop
+    const polled = await pollTask(task);
+
+    // Recorded as soon as it is made: Kie charges for it even if storing it fails
+    if (owner && polled.url && !task.url) {
+      // oxlint-disable-next-line no-await-in-loop
+      await recordKieUsage({
+        userId: owner.userId,
+        organizationId: owner.organizationId,
+        campaignId: owner.campaignId ?? undefined,
+        taskId: polled.taskId,
+        model: PHOTO_MODEL,
+        credits: polled.credits,
+      });
+    }
+
+    polledTasks.push(polled);
+  }
+
+  return polledTasks;
 };
 
 /**
@@ -437,9 +549,17 @@ export const advanceDemoVsl = async (
     // One at a time: Kie refuses calls that come too fast
     for (const entry of entries) {
       // oxlint-disable-next-line no-await-in-loop
-      const taskId = await startTask(entry);
+      const taskId = entry.kind === 'photo' ? await startTask(entry) : '';
 
-      tasks.push({ ...entry, taskId, retries: 0, url: null, credits: 0, isFailed: false });
+      tasks.push({
+        ...entry,
+        taskId,
+        retries: 0,
+        url: null,
+        credits: 0,
+        isFailed: false,
+        voiceId: null,
+      });
     }
 
     return {
@@ -448,34 +568,17 @@ export const advanceDemoVsl = async (
     };
   }
 
-  const tasks: KieTask[] = [];
-  const owner = await findDemoOwner(demo);
-
-  for (const task of payload.tasks) {
-    // oxlint-disable-next-line no-await-in-loop
-    const polled = await pollTask(task);
-
-    // Recorded as soon as it is made: Kie charges for it even if storing it fails
-    if (owner && polled.url && !task.url) {
-      // oxlint-disable-next-line no-await-in-loop
-      await recordKieUsage({
-        userId: owner.userId,
-        organizationId: owner.organizationId,
-        campaignId: owner.campaignId ?? undefined,
-        taskId: polled.taskId,
-        model: polled.kind === 'photo' ? PHOTO_MODEL : TTS_MODEL,
-        credits: polled.credits,
-      });
-    }
-
-    tasks.push(polled);
-  }
-
+  const tasks = await voicePendingLines(demo.id, await pollPhotos(demo, payload.tasks));
   const elapsed = Date.now() - (payload.voiceStartedAt ?? Date.now());
-  const isWaiting = tasks.some((task) => !task.url && !task.isFailed);
+  const isWaiting = tasks.some(
+    (task) => !task.isFailed && (task.kind === 'voice' ? !task.voiceId : !task.url),
+  );
 
   if (isWaiting && elapsed < VOICE_TIMEOUT_MS) {
-    return { payload: { ...payload, tasks }, delaySeconds: pollDelaySeconds(elapsed) };
+    // Lines left over by a run's time limit are voiced on the next cron
+    const delaySeconds = tasks.some(isPendingVoice) ? 0 : pollDelaySeconds(elapsed);
+
+    return { payload: { ...payload, tasks }, delaySeconds };
   }
 
   await storeResults(demo, tasks);
