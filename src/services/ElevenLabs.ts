@@ -1,6 +1,4 @@
 import { Env } from '@/libs/Env';
-import type { DemoLanguage } from '@/utils/DemoLanguage';
-import { GIGI_DEMO_VOICE_ID } from '@/utils/GigiVoice';
 import { requireEnv } from '@/utils/Helpers';
 import { HOST_VOICE_SAMPLE_RATE } from '@/utils/HostVoice';
 
@@ -11,38 +9,23 @@ const MODEL = 'eleven_multilingual_v2';
 
 const CALL_TIMEOUT_MS = 60_000;
 
-/** Gigi's demo voice, the same model Kie runs: half the cost of multilingual v2. */
-const GIGI_MODEL = 'eleven_turbo_v2_5';
-
 /**
- * Asks ElevenLabs to say a line.
- * @param options The call options.
- * @param options.text What is said.
- * @param options.voiceId The ElevenLabs voice.
- * @param options.modelId The ElevenLabs model.
- * @param options.languageCode The language, for models that take one.
+ * Says a line in Gianmarco's cloned voice.
+ * @param text What he says.
  * @returns The voice, as 16-bit mono samples at `HOST_VOICE_SAMPLE_RATE`.
- * @throws {Error} When the key is missing or ElevenLabs refuses the line.
+ * @throws {Error} When the key or the voice is missing, or ElevenLabs refuses the line.
  */
-const speak = async (options: {
-  text: string;
-  voiceId: string;
-  modelId: string;
-  languageCode?: string;
-}) => {
+export const speakAsHost = async (text: string) => {
+  const voiceId = requireEnv('ELEVENLABS_VOICE_ID', Env.ELEVENLABS_VOICE_ID);
   const response = await fetch(
-    `${ELEVENLABS_API_URL}/v1/text-to-speech/${options.voiceId}?output_format=pcm_${HOST_VOICE_SAMPLE_RATE}`,
+    `${ELEVENLABS_API_URL}/v1/text-to-speech/${voiceId}?output_format=pcm_${HOST_VOICE_SAMPLE_RATE}`,
     {
       method: 'POST',
       headers: {
         'xi-api-key': requireEnv('ELEVENLABS_API_KEY', Env.ELEVENLABS_API_KEY),
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        text: options.text,
-        model_id: options.modelId,
-        language_code: options.languageCode,
-      }),
+      body: JSON.stringify({ text, model_id: MODEL }),
       signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
     },
   );
@@ -56,32 +39,3 @@ const speak = async (options: {
   // Copied so the samples start on an even byte, as Int16Array needs
   return new Int16Array(Uint8Array.from(bytes).buffer, 0, Math.floor(bytes.length / 2));
 };
-
-/**
- * Says a line in Gianmarco's cloned voice.
- * @param text What he says.
- * @returns The voice, as 16-bit mono samples at `HOST_VOICE_SAMPLE_RATE`.
- * @throws {Error} When the key or the voice is missing, or ElevenLabs refuses the line.
- */
-export const speakAsHost = async (text: string) =>
-  await speak({
-    text,
-    voiceId: requireEnv('ELEVENLABS_VOICE_ID', Env.ELEVENLABS_VOICE_ID),
-    modelId: MODEL,
-  });
-
-/**
- * Says one of Gigi's demo lines straight from ElevenLabs, for when Kie cannot.
- * @param options The call options.
- * @param options.text What he says, as Kie would get it.
- * @param options.language The language he says it in.
- * @returns The voice, as 16-bit mono samples at `HOST_VOICE_SAMPLE_RATE`.
- * @throws {Error} When the key is missing or ElevenLabs refuses the line.
- */
-export const speakAsGigi = async (options: { text: string; language: DemoLanguage }) =>
-  await speak({
-    text: options.text,
-    voiceId: GIGI_DEMO_VOICE_ID,
-    modelId: GIGI_MODEL,
-    languageCode: options.language,
-  });
