@@ -22,7 +22,7 @@ import {
   jobSchema,
 } from '@/models/Schema';
 import { toDemoVsl, writeDemoVsl } from '@/services/DemoVslWriter';
-import { speakAsHost } from '@/services/ElevenLabs';
+import { speakAsGigi, speakAsHost } from '@/services/ElevenLabs';
 import { createKieTask, downloadFromKie, readKieTask } from '@/services/Kie';
 import type { DemoLanguage } from '@/utils/DemoLanguage';
 import { demoLanguageOf } from '@/utils/DemoLanguage';
@@ -64,6 +64,9 @@ const PHOTO_QUALITY = 86;
 
 /** Past this, the lines Kie has voiced are kept and the others are only typed, without a photo. */
 const VOICE_TIMEOUT_MS = 15 * 60 * 1000;
+
+/** Voices ElevenLabs makes at once when Kie gave up on them: its plans cap calls in flight. */
+const DIRECT_VOICE_BATCH = 3;
 
 /** A voice or a photo Kie fails is asked again this many times. */
 const VOICE_RETRIES = 1;
@@ -210,6 +213,16 @@ const renderVoiceLines = async (demo: Demo, vsl: DemoVsl) => {
 };
 
 /**
+ * Spells a line the way the voice reads it in its language.
+ * @param text The spoken line.
+ * @param language The language it is said in.
+ * @returns What the voice gets.
+ */
+const toVoiceText = (text: string, language: DemoLanguage) =>
+  // The brand is spelled "Giraus" so an Italian voice says it right; an English one reads it as written
+  language === 'en' ? text.replaceAll('Giraus', 'Girhouse') : text;
+
+/**
  * Asks Kie to voice one of Gigi's lines. Gianmarco's own cloned voice, from the recordings
  * in `host_voice`, was used on 29/10 and set aside when Gigi came back (see commit 3204160).
  * @param text What he says.
@@ -218,8 +231,7 @@ const renderVoiceLines = async (demo: Demo, vsl: DemoVsl) => {
  */
 const startVoice = async (text: string, language: DemoLanguage) =>
   await createKieTask(TTS_MODEL, {
-    // The brand is spelled "Giraus" so an Italian voice says it right; an English one reads it as written
-    text: language === 'en' ? text.replaceAll('Giraus', 'Girhouse') : text,
+    text: toVoiceText(text, language),
     voice: GIGI_DEMO_VOICE_ID,
     language_code: language,
   });
@@ -316,6 +328,49 @@ const voiceAsHost = async (demo: Demo, vsl: DemoVsl) => {
 };
 
 /**
+ * Voices one of Gigi's lines straight from ElevenLabs, with the same voice Kie uses.
+ * @param task The voice task Kie gave up on.
+ * @returns The line, what it says and the MP3, or null when ElevenLabs refuses it too.
+ */
+const voiceDirectly = async (task: KieTask) => {
+  try {
+    const samples = await speakAsGigi({
+      text: toVoiceText(task.text, task.language),
+      language: task.language,
+    });
+
+    return { line: task.line, text: task.text, ...pcmToMp3(samples, HOST_VOICE_SAMPLE_RATE) };
+  } catch (error) {
+    logger.warn('ElevenLabs could not voice {line} either: {error}', {
+      line: task.line,
+      error: error instanceof Error ? error.message : String(error),
+    });
+
+    return null;
+  }
+};
+
+/**
+ * Voices straight from ElevenLabs the lines Kie gave up on or never finished.
+ * @param tasks The voice tasks without a file.
+ * @returns The lines ElevenLabs voiced.
+ */
+const voiceMissingDirectly = async (tasks: KieTask[]) => {
+  const voiced: Awaited<ReturnType<typeof downloadVoice>>[] = [];
+
+  for (let index = 0; index < tasks.length; index += DIRECT_VOICE_BATCH) {
+    // oxlint-disable-next-line no-await-in-loop
+    const batch = await Promise.all(
+      tasks.slice(index, index + DIRECT_VOICE_BATCH).map(voiceDirectly),
+    );
+
+    voiced.push(...batch.filter((voice) => voice !== null));
+  }
+
+  return voiced;
+};
+
+/**
  * Downloads one photo Kie made, shrunk to what the frame shows.
  * @param task The photo task, done.
  * @returns The line, its prompt and the JPEG.
@@ -353,6 +408,11 @@ const storeResults = async (demo: Demo, tasks: KieTask[]) => {
     }
   }
 
+  // Kie's voices fail for hours at a time: the same voice comes straight from ElevenLabs
+  voiced.push(
+    ...(await voiceMissingDirectly(tasks.filter((task) => task.kind === 'voice' && !task.url))),
+  );
+
   await db.transaction(async (tx) => {
     await tx.delete(demoVoiceSchema).where(eq(demoVoiceSchema.demoId, demo.id));
     await tx.delete(demoPhotoSchema).where(eq(demoPhotoSchema.demoId, demo.id));
@@ -389,6 +449,34 @@ const storeResults = async (demo: Demo, tasks: KieTask[]) => {
       })
       .where(eq(demoSchema.id, demo.id));
   });
+};
+
+/**
+ * Starts the Kie task for one voice or photo. A voice Kie cannot even start is left
+ * failed, to be voiced straight from ElevenLabs at the end.
+ * @param entry What to make.
+ * @returns The task.
+ * @throws {Error} When Kie cannot start a photo.
+ */
+const startEntry = async (
+  entry: Pick<KieTask, 'kind' | 'line' | 'text' | 'language'>,
+): Promise<KieTask> => {
+  const taskId = await startTask(entry).catch((error: unknown) => {
+    if (entry.kind === 'photo') {
+      throw error;
+    }
+
+    return null;
+  });
+
+  return {
+    ...entry,
+    taskId: taskId ?? '',
+    retries: 0,
+    url: null,
+    credits: 0,
+    isFailed: taskId === null,
+  };
 };
 
 /**
@@ -437,9 +525,7 @@ export const advanceDemoVsl = async (
     // One at a time: Kie refuses calls that come too fast
     for (const entry of entries) {
       // oxlint-disable-next-line no-await-in-loop
-      const taskId = await startTask(entry);
-
-      tasks.push({ ...entry, taskId, retries: 0, url: null, credits: 0, isFailed: false });
+      tasks.push(await startEntry(entry));
     }
 
     return {
