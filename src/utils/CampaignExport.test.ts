@@ -18,6 +18,7 @@ const makeContact = (
   company: 'Rossi Srl',
   website: 'https://rossi.it',
   linkedinUrl: null,
+  emailVerification: null,
   extra: {},
   status: 'ready',
   errorMessage: null,

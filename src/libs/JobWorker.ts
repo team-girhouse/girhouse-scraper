@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNotNull, or } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, or, sql } from 'drizzle-orm';
 import * as z from 'zod';
 import type { jobSchema } from '@/models/Schema';
 import {
@@ -7,6 +7,7 @@ import {
   emailDraftSchema,
   enrichmentSchema,
   leadOutcomeSchema,
+  leadSchema,
 } from '@/models/Schema';
 import { writeEmailSequence } from '@/services/Copywriting';
 import {
@@ -30,6 +31,7 @@ import {
 } from './CampaignWriting';
 import { db } from './DB';
 import { demoVslJobHandlers, markDemoVslAbandoned } from './DemoVsl';
+import { verifyAddress } from './EmailVerification';
 import { followUpJobHandlers, markConversationTickAbandoned } from './FollowUps';
 import {
   ghlLeadJobHandlers,
@@ -92,6 +94,57 @@ const requireContact = async (contactId: string | null) => {
 };
 
 /**
+ * Checks once that a contact's address can receive mail, reusing the verdict of a lead
+ * found on the platform. A catch-all domain passes, since the address was given, not guessed.
+ * @param options The call options.
+ * @param options.contact The contact to check.
+ * @param options.campaign The campaign the verification is billed to.
+ * @returns The verdict when the address may not be written to, or null when it may.
+ */
+const findUndeliverable = async (options: {
+  contact: typeof contactSchema.$inferSelect;
+  campaign: typeof campaignSchema.$inferSelect;
+}) => {
+  const { contact, campaign } = options;
+
+  if (contact.emailVerification) {
+    return null;
+  }
+
+  const lead = await db.query.leadSchema.findFirst({
+    columns: { emailVerification: true },
+    where: and(
+      eq(leadSchema.organizationId, campaign.organizationId),
+      eq(sql`lower(${leadSchema.email})`, contact.email),
+      isNotNull(leadSchema.emailVerification),
+    ),
+  });
+
+  const verdict =
+    lead?.emailVerification ??
+    (await verifyAddress({
+      email: contact.email,
+      owner: {
+        userId: campaign.userId,
+        organizationId: campaign.organizationId,
+        campaignId: campaign.id,
+      },
+      recordId: contact.id,
+    }));
+
+  if (verdict !== 'valid' && verdict !== 'catch_all') {
+    return verdict;
+  }
+
+  await db
+    .update(contactSchema)
+    .set({ emailVerification: verdict })
+    .where(eq(contactSchema.id, contact.id));
+
+  return null;
+};
+
+/**
  * Starts or polls the Parallel research for one contact.
  * The first pass creates the run and reschedules; later passes poll it. Both
  * finish in seconds, so the worker request never blocks on the research.
@@ -106,6 +159,21 @@ const runEnrichJob = async (job: Job) => {
   });
 
   if (!existing?.parallelRunId) {
+    // Checked before the research, so an address that would bounce costs no Parallel run
+    const undeliverable = await findUndeliverable({ contact, campaign });
+
+    if (undeliverable) {
+      await db
+        .update(contactSchema)
+        .set({ status: 'failed', errorMessage: `Email failed verification (${undeliverable})` })
+        .where(eq(contactSchema.id, contact.id));
+
+      await syncCampaignStatus(campaign.id);
+      await completeJob(job.id);
+
+      return;
+    }
+
     const ownWebsite = readOwnWebsite(contact);
     const [run, websiteCheck] = await Promise.all([
       createTaskRun({ contact, processor: campaign.processor }),

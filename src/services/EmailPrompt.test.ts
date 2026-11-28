@@ -73,6 +73,7 @@ const contact = (): typeof contactSchema.$inferSelect => ({
   company: null,
   website: null,
   linkedinUrl: null,
+  emailVerification: null,
   extra: { Segment: 'SMB' },
   status: 'enriched',
   errorMessage: null,

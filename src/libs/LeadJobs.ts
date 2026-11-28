@@ -13,10 +13,8 @@ import type { MapsPlace } from '@/services/Apify';
 import { fetchMapsRun, isReadableWebsite, startMapsRun, toLeadRow } from '@/services/Apify';
 import type { Rectangle } from '@/services/GooglePlaces';
 import { fetchAreaViewport, scanRectangle } from '@/services/GooglePlaces';
-import { verifyEmail } from '@/services/MillionVerifier';
 import { createDecisionMakerRun, fetchTaskRunResult } from '@/services/Parallel';
 import { findEmail } from '@/services/Prospeo';
-import { hasReoon, verifyEmailPower } from '@/services/Reoon';
 import { findWebsiteEmails } from '@/services/WebsiteContacts';
 import {
   countLeadsToTake,
@@ -37,13 +35,9 @@ import {
 import type { DecisionMaker } from '@/validations/LeadSearchValidation';
 import { DecisionMakerValidation } from '@/validations/LeadSearchValidation';
 import { db } from './DB';
+import { verifyAddress } from './EmailVerification';
 import { completeJob, pollDelaySeconds, rescheduleJob } from './JobQueue';
-import {
-  recordApifyUsage,
-  recordParallelUsage,
-  recordProspeoUsage,
-  recordVerificationUsage,
-} from './Usage';
+import { recordApifyUsage, recordParallelUsage, recordProspeoUsage } from './Usage';
 
 /** How long Parallel may hold a poll open. Short, so the worker stays snappy. */
 const PARALLEL_POLL_TIMEOUT_SECONDS = 5;
@@ -1048,33 +1042,6 @@ type FoundEmail = Pick<Lead, 'email' | 'emailSource' | 'emailVerification'>;
 type EmailRouteOutcome = 'rate_limited' | { attempts: EmailAttempt[]; found: FoundEmail | null };
 
 /**
- * Checks whether an address can receive mail, asking Reoon when MillionVerifier cannot tell.
- * @param options The call options.
- * @param options.email The address to check.
- * @param options.owner Who the verifications are billed to.
- * @returns The verdict.
- */
-const verifyAddress = async (options: { email: string; owner: EmailLookupOwner }) => {
-  const verdict = await verifyEmail(options.email);
-
-  await recordVerificationUsage({
-    ...options.owner,
-    email: options.email,
-    provider: 'millionverifier',
-  });
-
-  if (verdict !== 'unknown' || !hasReoon()) {
-    return verdict;
-  }
-
-  const second = await verifyEmailPower(options.email);
-
-  await recordVerificationUsage({ ...options.owner, email: options.email, provider: 'reoon' });
-
-  return second;
-};
-
-/**
  * Asks Prospeo for the decision maker's work email.
  * @param options The call options.
  * @param options.lead The lead, with a domain and a named decision maker.
@@ -1136,7 +1103,11 @@ const verifyCandidates = async (options: {
   // Sequential on purpose: each verification is billed, so it stops at the first good address
   for (const email of options.candidates) {
     // oxlint-disable-next-line no-await-in-loop
-    const verdict = await verifyAddress({ email, owner: options.owner });
+    const verdict = await verifyAddress({
+      email,
+      owner: options.owner,
+      recordId: options.owner.leadId,
+    });
 
     attempts.push({ source: options.source, email, verdict });
 

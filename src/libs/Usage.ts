@@ -124,7 +124,7 @@ const matching = (filter: UsageFilter) =>
   );
 
 /** Who a billed call was made for: a campaign, or a lead search. */
-type UsageOwner = {
+export type UsageOwner = {
   userId: string;
   organizationId: string;
   campaignId?: string;
@@ -240,19 +240,19 @@ export const recordProspeoUsage = async (
 };
 
 /**
- * Records one email verification. Safe to repeat: each address of a lead is only counted once.
+ * Records one email verification. Safe to repeat: each checked address is only counted once.
  * @param options The call options.
- * @param options.userId The owner of the lead search.
- * @param options.organizationId The organization the lead search belongs to.
- * @param options.leadSearchId The lead search the verification was made for.
- * @param options.leadId The lead whose email was verified.
+ * @param options.userId Who the verification is billed to.
+ * @param options.organizationId The organization it was made for.
+ * @param options.campaignId The campaign it was made for, if any.
+ * @param options.leadSearchId The lead search it was made for, if any.
+ * @param options.recordId The lead or contact whose email was verified.
  * @param options.email The verified address.
  * @param options.provider The verifier that checked it.
  */
 export const recordVerificationUsage = async (
   options: UsageOwner & {
-    leadSearchId: string;
-    leadId: string;
+    recordId: string;
     email: string;
     provider: Extract<UsageProvider, 'millionverifier' | 'reoon'>;
   },
@@ -262,9 +262,10 @@ export const recordVerificationUsage = async (
     .values({
       userId: options.userId,
       organizationId: options.organizationId,
+      campaignId: options.campaignId,
       leadSearchId: options.leadSearchId,
       provider: options.provider,
-      externalId: `${options.leadId}:${options.email}`,
+      externalId: `${options.recordId}:${options.email}`,
       model: 'verify',
       costMicros:
         options.provider === 'reoon' ? REOON_VERIFICATION_COST_MICROS : VERIFICATION_COST_MICROS,

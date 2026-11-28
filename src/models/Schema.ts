@@ -342,6 +342,8 @@ export const contactSchema = pgTable(
     company: text('company'),
     website: text('website'),
     linkedinUrl: text('linkedin_url'),
+    // Set once the address passed verification, so a retried job is not billed again
+    emailVerification: emailVerificationEnum('email_verification'),
     // CSV columns that were not mapped to a known field
     extra: jsonb('extra').$type<Record<string, string>>().notNull().default({}),
     status: contactStatusEnum('status').notNull().default('pending'),

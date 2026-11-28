@@ -379,6 +379,13 @@
       "when": 1795122469212,
       "tag": "0053_automation_notify_email",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1795875326276,
+      "tag": "0054_contact_email_verification",
+      "breakpoints": true
     }
   ]
 }

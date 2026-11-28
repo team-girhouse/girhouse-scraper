@@ -1,0 +1,1 @@
+ALTER TABLE "contact" ADD COLUMN "email_verification" "email_verification";
