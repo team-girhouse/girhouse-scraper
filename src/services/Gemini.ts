@@ -10,6 +10,14 @@ const TTS_MODEL = 'gemini-3.8-flash-tts';
 /** A line takes a few seconds; past this the call is dropped and the line asked again later. */
 const CALL_TIMEOUT_MS = 60_000;
 
+/** Gemini's answer when the project's requests a minute run out. */
+const RATE_LIMITED = 429;
+
+/** Thrown when Gemini asks to slow down: the line is asked again later, not given up on. */
+export class GeminiRateLimitError extends Error {
+  override name = 'GeminiRateLimitError';
+}
+
 const contentSchema = z.object({ type: z.string(), data: z.string().nullish() });
 
 const responseSchema = z.object({
@@ -23,6 +31,7 @@ const responseSchema = z.object({
  * @param options.voice The Gemini voice, such as `Achird`.
  * @param options.style How it is said, in plain words.
  * @returns The voice as a WAV file.
+ * @throws {GeminiRateLimitError} When the project's requests a minute run out.
  * @throws {Error} When the key is missing, Gemini refuses the line or sends no audio.
  */
 export const speakWithGemini = async (options: { text: string; voice: string; style: string }) => {
@@ -51,6 +60,10 @@ export const speakWithGemini = async (options: { text: string; voice: string; st
     }),
     signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
   });
+
+  if (response.status === RATE_LIMITED) {
+    throw new GeminiRateLimitError(`Gemini asked to slow down: ${await response.text()}`);
+  }
 
   if (!response.ok) {
     throw new Error(`Gemini answered ${response.status}: ${await response.text()}`);

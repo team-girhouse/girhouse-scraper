@@ -23,7 +23,7 @@ import {
 } from '@/models/Schema';
 import { toDemoVsl, writeDemoVsl } from '@/services/DemoVslWriter';
 import { speakAsHost } from '@/services/ElevenLabs';
-import { speakWithGemini } from '@/services/Gemini';
+import { GeminiRateLimitError, speakWithGemini } from '@/services/Gemini';
 import { createKieTask, downloadFromKie, readKieTask } from '@/services/Kie';
 import type { DemoLanguage } from '@/utils/DemoLanguage';
 import { demoLanguageOf } from '@/utils/DemoLanguage';
@@ -291,9 +291,10 @@ const pollTask = async (task: KieTask): Promise<KieTask> => {
  * Voices one line with Gemini and stores it right away, so a long script spreads over runs.
  * @param demoId The demo.
  * @param task The voice task.
- * @returns The task, with the stored voice, one more attempt, or given up on.
+ * @returns The task, with the stored voice, one more attempt, or given up on; null when Gemini
+ * asked to slow down, which does not count as an attempt.
  */
-const voiceLine = async (demoId: string, task: KieTask): Promise<KieTask> => {
+const voiceLine = async (demoId: string, task: KieTask): Promise<KieTask | null> => {
   try {
     const voice = await speakAsGigi(task.text, task.language);
     const [row] = await db
@@ -310,6 +311,10 @@ const voiceLine = async (demoId: string, task: KieTask): Promise<KieTask> => {
 
     return { ...task, voiceId: row?.id ?? null };
   } catch (error) {
+    if (error instanceof GeminiRateLimitError) {
+      return null;
+    }
+
     const retries = task.retries + 1;
     const isFailed = retries >= GEMINI_VOICE_ATTEMPTS;
 
@@ -332,7 +337,8 @@ const voiceLine = async (demoId: string, task: KieTask): Promise<KieTask> => {
 const isPendingVoice = (task: KieTask) => task.kind === 'voice' && !task.voiceId && !task.isFailed;
 
 /**
- * Voices the lines still waiting, a few at a time, for as long as one run allows.
+ * Voices the lines still waiting, a few at a time, for as long as one run allows and until
+ * Gemini asks to slow down.
  * @param demoId The demo.
  * @param tasks The voice and photo tasks.
  * @returns The tasks, updated.
@@ -342,9 +348,11 @@ const voicePendingLines = async (demoId: string, tasks: KieTask[]) => {
   const pending = tasks.filter(isPendingVoice);
   const updated = new Map<KieTask, KieTask>();
 
+  let isRateLimited = false;
+
   for (
     let index = 0;
-    index < pending.length && Date.now() - startedAt < GEMINI_VOICE_BUDGET_MS;
+    index < pending.length && !isRateLimited && Date.now() - startedAt < GEMINI_VOICE_BUDGET_MS;
     index += GEMINI_VOICE_BATCH
   ) {
     const batch = pending.slice(index, index + GEMINI_VOICE_BATCH);
@@ -352,7 +360,10 @@ const voicePendingLines = async (demoId: string, tasks: KieTask[]) => {
     const voiced = await Promise.all(batch.map(async (task) => await voiceLine(demoId, task)));
 
     for (const [position, task] of batch.entries()) {
-      updated.set(task, voiced[position] ?? task);
+      const result = voiced[position];
+
+      isRateLimited ||= result === null;
+      updated.set(task, result ?? task);
     }
   }
 
